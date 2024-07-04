@@ -21,23 +21,19 @@ def get_file_extension(image_format):
         return 'jpg'  # Default to 'jpg' for other formats
 
 def lambda_handler(event, context):
-    # Retrieve the bucket name and object key from the event
-    source_bucket = event['Records'][0]['s3']['bucket']['name']
-    original_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
-    logger.info(f"Received event for bucket: {source_bucket}, key: {original_key}")
+    # Get the source and destination buckets from environment variables
+    source_bucket = os.environ['SOURCE_BUCKET']
+    destination_bucket = os.environ['DESTINATION_BUCKET']
+    logger.info(f"Using source bucket: {source_bucket}")
+    logger.info(f"Using destination bucket: {destination_bucket}")
 
+    # Retrieve the object key from the event
+    original_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
+    logger.info(f"Received event for key: {original_key}")
+    
     # Get the RESIZED_PREFIX environment variable
     resized_prefix = os.environ.get('RESIZED_PREFIX', 'resized')
     logger.info(f"Using prefix for resized images: {resized_prefix}")
-
-    # Get the DESTINATION_BUCKET environment variable
-    destination_bucket = os.environ.get('DESTINATION_BUCKET')
-    if not destination_bucket:
-        logger.error("DESTINATION_BUCKET environment variable is not set")
-        return {
-            'statusCode': 500,
-            'body': "DESTINATION_BUCKET environment variable is not set"
-        }
 
     try:
         # Download the image from S3
@@ -78,10 +74,9 @@ def lambda_handler(event, context):
             # Generate the resized image key with the configured prefix
             file_extension = get_file_extension(image.format)
             resized_key = f"{resized_prefix}/{os.path.splitext(original_key)[0]}_{size_name}.{file_extension}"
-
             logger.info(f"Uploading resized image to S3: {destination_bucket}/{resized_key}")
 
-            # Upload the resized image to the destination bucket
+            # Upload the resized image to S3
             s3.put_object(
                 Bucket=destination_bucket,
                 Key=resized_key,
@@ -94,6 +89,7 @@ def lambda_handler(event, context):
             'statusCode': 200,
             'body': 'Image resized successfully'
         }
+
     except Exception as e:
         logger.error(f"Error resizing image: {str(e)}")
         return {

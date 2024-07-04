@@ -1,25 +1,50 @@
 version: 0.2
 
 phases:
-  install:
-    runtime-versions:
-      python: 3.8
   pre_build:
     commands:
       - echo Logging in to Amazon ECR...
-aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin 078689321816.dkr.ecr.ap-southeast-2.amazonaws.com      - REPOSITORY_URI=$ECR_ENDPOINT/$ECR_REPOSITORY
-      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+      - |
+        # Get the imageDigest of the latest image
+        LATEST_DIGEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' --output text)
+        
+        # Get all image digests except the latest
+        IMAGES_TO_DELETE=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --query "imageDetails[?imageDigest!='${LATEST_DIGEST}'].imageDigest" --output text)
+        
+        if [ ! -z "$IMAGES_TO_DELETE" ]; then
+          echo "Deleting old images..."
+          aws ecr batch-delete-image --repository-name $ECR_REPOSITORY --image-ids $(echo $IMAGES_TO_DELETE | sed 's/\s\+/ imageDigest=/g; s/^/imageDigest=/')
+          echo "Deleted old images"
+        else
+          echo "No old images to delete"
+        fi
+
   build:
     commands:
+      - set -e
       - echo Build started on `date`
       - echo Building the Docker image...
-      - docker build -t $REPOSITORY_URI:$IMAGE_TAG .
-docker tag image-resize:latest 078689321816.dkr.ecr.ap-southeast-2.amazonaws.com/image-resize:latest  post_build:
+      - docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$CODEBUILD_RESOLVED_SOURCE_VERSION .
+      - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CODEBUILD_RESOLVED_SOURCE_VERSION $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  post_build:
     commands:
       - echo Build completed on `date`
-      - echo Pushing the Docker image...
-      - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - printf '[{"name":"resize-image-lambda","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imageDetail.json
+      - echo Pushing the Docker images...
+      - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CODEBUILD_RESOLVED_SOURCE_VERSION
+      - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+      - echo Writing image definitions file...
+      - printf '{"ImageURI":"%s"}' $ECR_REGISTRY/$ECR_REPOSITORY:$CODEBUILD_RESOLVED_SOURCE_VERSION > imageDetail.json
+      - echo Updating Lambda function...
+      - |
+        if ! aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME \
+            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$CODEBUILD_RESOLVED_SOURCE_VERSION; then
+          echo "Failed to update Lambda function"
+          exit 1
+        fi
+      - echo "Lambda function updated successfully"
+
 artifacts:
   files:
     - imageDetail.json
